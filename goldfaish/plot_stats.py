@@ -18,7 +18,12 @@ def plot_cumulative_damage(stats, out_dir):
         for i, game in enumerate(stats):
             turns = game['turns']
             cum_damage = np.cumsum([t['damage_taken'][player] for t in turns])
-            plt.plot(range(1, len(turns)+1), cum_damage, label=f"Game {i+1}", alpha=0.5)
+            plt.plot(range(1,
+                           len(turns) + 1),
+                     cum_damage,
+                     label=f"Game {i+1}",
+                     alpha=0.5,
+                     linewidth=1)
         plt.title(f'Cumulative Damage Taken by Turn ({player})')
         plt.xlabel('Turn')
         plt.ylabel('Cumulative Damage')
@@ -27,6 +32,23 @@ def plot_cumulative_damage(stats, out_dir):
         plt.savefig(out_path)
         plt.close()
         files[player] = f'cumulative_damage_{player}.png'
+    # New: plot difference in total cumulative damage taken between Ai(1) and Ai(2)
+    plt.figure(figsize=(8, 5))
+    for i, game in enumerate(stats):
+        turns = game['turns']
+        cum_damage_1 = np.cumsum([t['damage_taken']['Ai(1)'] for t in turns])
+        cum_damage_2 = np.cumsum([t['damage_taken']['Ai(2)'] for t in turns])
+        damage_diff = cum_damage_2 - cum_damage_1  # Positive: Ai(2) has taken more damage
+        plt.plot(range(1, len(turns) + 1), damage_diff, label=f"Game {i+1}", alpha=0.5, linewidth=1)
+    plt.title('Cumulative Damage Difference by Turn (Ai(2) - Ai(1))')
+    plt.xlabel('Turn')
+    plt.ylabel('Cumulative Damage Difference')
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+    out_path = os.path.join(out_dir, 'cumulative_damage_difference.png')
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+    files['cumulative_damage_difference'] = 'cumulative_damage_difference.png'
     return files
 
 
@@ -75,7 +97,7 @@ def plot_win_turn_cdf(stats, out_dir):
         percentiles[pid] = {}
         for p in [10, 25, 50, 75, 90]:
             if len(turns) > 0:
-                percentiles[pid][p] = int(np.percentile(turns, p, interpolation='nearest'))
+                percentiles[pid][p] = int(np.percentile(turns, p, method='nearest'))
             else:
                 percentiles[pid][p] = None
     plt.title('CDF of Win Turn (by Winner)')
@@ -96,6 +118,14 @@ def write_html(stats, out_dir, plot_files, win_turn_percentiles=None):
         winner = game['winner']
         if winner in games_won:
             games_won[winner].append(i+1)  # 1-based game index
+    # Get player and deck names for title
+    if stats and 'players' in stats[0]:
+        deck_names = stats[0]['players']
+        player1 = f"Ai(1) ({deck_names.get('Ai(1)','')})"
+        player2 = f"Ai(2) ({deck_names.get('Ai(2)','')})"
+        matchup_title = f"{player1} vs {player2}"
+    else:
+        matchup_title = "Game Stats Dashboard"
     html_path = os.path.join(out_dir, 'stats.html')
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write("""
@@ -103,8 +133,8 @@ def write_html(stats, out_dir, plot_files, win_turn_percentiles=None):
         <html>
         <head>
             <meta charset='utf-8'/>
-            <title>Game Stats Dashboard</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+            <title>{matchup_title}</title>
+            <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
             <style>
                 body {{ margin: 2em; }}
                 .tab-content {{ margin-top: 1em; }}
@@ -113,47 +143,56 @@ def write_html(stats, out_dir, plot_files, win_turn_percentiles=None):
             </style>
         </head>
         <body>
-            <div class="container-fluid">
-                <h1>Game Stats Dashboard</h1>
-                <ul class="nav nav-tabs" id="mainTab" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="tab1-tab" data-bs-toggle="tab" data-bs-target="#tab1" type="button" role="tab">Cumulative Damage by Turn</button>
+            <div class=\"container-fluid\">
+                <h1 class=\"mb-4\">{matchup_title}</h1>
+                <ul class=\"nav nav-tabs\" id=\"mainTab\" role=\"tablist\">
+                    <li class=\"nav-item\" role=\"presentation\">
+                        <button class=\"nav-link active\" id=\"tab1-tab\" data-bs-toggle=\"tab\" data-bs-target=\"#tab1\" type=\"button\" role=\"tab\">Cumulative Damage by Turn</button>
                     </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="tab2-tab" data-bs-toggle="tab" data-bs-target="#tab2" type="button" role="tab">Win Rate per Player</button>
+                    <li class=\"nav-item\" role=\"presentation\">
+                        <button class=\"nav-link\" id=\"tab1b-tab\" data-bs-toggle=\"tab\" data-bs-target=\"#tab1b\" type=\"button\" role=\"tab\">Cumulative Damage Difference by Turn</button>
                     </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="tab3-tab" data-bs-toggle="tab" data-bs-target="#tab3" type="button" role="tab">CDF of Win Turn</button>
+                    <li class=\"nav-item\" role=\"presentation\">
+                        <button class=\"nav-link\" id=\"tab2-tab\" data-bs-toggle=\"tab\" data-bs-target=\"#tab2\" type=\"button\" role=\"tab\">Win Rate per Player</button>
                     </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="tab4-tab" data-bs-toggle="tab" data-bs-target="#tab4" type="button" role="tab">Game Logs</button>
+                    <li class=\"nav-item\" role=\"presentation\">
+                        <button class=\"nav-link\" id=\"tab3-tab\" data-bs-toggle=\"tab\" data-bs-target=\"#tab3\" type=\"button\" role=\"tab\">CDF of Win Turn</button>
+                    </li>
+                    <li class=\"nav-item\" role=\"presentation\">
+                        <button class=\"nav-link\" id=\"tab4-tab\" data-bs-toggle=\"tab\" data-bs-target=\"#tab4\" type=\"button\" role=\"tab\">Game Logs</button>
                     </li>
                 </ul>
-                <div class="tab-content" id="mainTabContent">
-                    <div class="tab-pane fade show active" id="tab1" role="tabpanel">
+                <div class=\"tab-content\" id=\"mainTabContent\">
+                    <div class=\"tab-pane fade show active\" id=\"tab1\" role=\"tabpanel\">
                         <h4>Cumulative Damage: Ai(1)</h4>
-                        <img src="{cumulative_Ai1}" alt="Cumulative Damage by Turn: Ai(1)">
-                        <h4 class="mt-4">Cumulative Damage: Ai(2)</h4>
-                        <img src="{cumulative_Ai2}" alt="Cumulative Damage by Turn: Ai(2)">
+                        <img src=\"{cumulative_Ai1}\" alt=\"Cumulative Damage by Turn: Ai(1)\">
+                        <h4 class=\"mt-4\">Cumulative Damage: Ai(2)</h4>
+                        <img src=\"{cumulative_Ai2}\" alt=\"Cumulative Damage by Turn: Ai(2)\">
                     </div>
-                    <div class="tab-pane fade" id="tab2" role="tabpanel">
-                        <img src="{winrate}" alt="Win Rate per Player">
-                        <div class="row mt-4">
-                            <div class="col-md-6">
+                    <div class=\"tab-pane fade\" id=\"tab1b\" role=\"tabpanel\">
+                        <h4>Cumulative Damage Difference by Turn (Ai(2) - Ai(1))</h4>
+                        <img src=\"{cumulative_damage_difference}\" alt=\"Cumulative Damage Difference by Turn\">
+                    </div>
+                    <div class=\"tab-pane fade\" id=\"tab2\" role=\"tabpanel\">
+                        <img src=\"{winrate}\" alt=\"Win Rate per Player\">
+                        <div class=\"row mt-4\">
+                            <div class=\"col-md-6\">
                                 <h5>Games won by Ai(1):</h5>
                                 <p>{games1}</p>
                             </div>
-                            <div class="col-md-6">
+                            <div class=\"col-md-6\">
                                 <h5>Games won by Ai(2):</h5>
                                 <p>{games2}</p>
                             </div>
                         </div>
                     </div>
-                    <div class="tab-pane fade" id="tab3" role="tabpanel">
-                        <img src="{cdf}" alt="CDF of Win Turn">
+                    <div class=\"tab-pane fade\" id=\"tab3\" role=\"tabpanel\">
+                        <img src=\"{cdf}\" alt=\"CDF of Win Turn\">
         """.format(
+            matchup_title=matchup_title,
             cumulative_Ai1=plot_files['cumulative_Ai(1)'],
             cumulative_Ai2=plot_files['cumulative_Ai(2)'],
+            cumulative_damage_difference=plot_files['cumulative_damage_difference'],  # Add new plot
             winrate=plot_files['winrate'],
             cdf=plot_files['cdf'],
             games1=(', '.join(str(g) for g in games_won['Ai(1)'])) or 'None',
@@ -216,6 +255,7 @@ def main():
     plot_files = {
         'cumulative_Ai(1)': cumulative_files['Ai(1)'],
         'cumulative_Ai(2)': cumulative_files['Ai(2)'],
+        'cumulative_damage_difference': cumulative_files['cumulative_damage_difference'],  # Update key
         'winrate': plot_win_rate(stats, args.log_dir),
         'cdf': cdf_file,
     }
