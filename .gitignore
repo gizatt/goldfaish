@@ -1,0 +1,7 @@
+sandbox/
+.venv
+*egg-info
+**/ __pycache__/
+ *.pyc
+goldfaish/__pycache__/** */
+goldfaish/__pycache__/collect_data.cpython-310.pyc
