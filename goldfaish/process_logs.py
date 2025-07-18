@@ -11,11 +11,11 @@ class StatProcessor:
     """
     Base class for stat processors. Override process_game to extract stats from a parsed game.
     """
-    def process_game(self, game_lines: List[str]) -> Dict[str, Any]:
+    def process_game(self, game_lines: List[str], deck_names=None) -> Dict[str, Any]:
         raise NotImplementedError
 
 class BasicStatsProcessor(StatProcessor):
-    def process_game(self, game_lines: List[str]) -> Dict[str, Any]:
+    def process_game(self, game_lines: List[str], deck_names=None) -> Dict[str, Any]:
         # Extract player names
         header_pat = re.compile(r"Ai\(1\)-(\w+) vs Ai\(2\)-(\w+)")
         mulligan_pat = re.compile(r"Mulligan: Ai\((\d)\)-(\w+) has (mulliganed down to|kept a hand of) (\d+) cards")
@@ -29,16 +29,22 @@ class BasicStatsProcessor(StatProcessor):
         
         # Find player names and deck names
         players = None
-        deck_names = None
+        local_deck_names = None
         for line in game_lines:
             m = header_pat.search(line)
             if m:
                 players = {"Ai(1)": "Ai(1)", "Ai(2)": "Ai(2)"}
-                deck_names = {"Ai(1)": m.group(1), "Ai(2)": m.group(2)}
+                local_deck_names = {"Ai(1)": m.group(1), "Ai(2)": m.group(2)}
                 break
         if not players:
-            raise LogParseError("Could not find player names")
-        
+            # Try to use deck_names passed from file header
+            if deck_names is not None:
+                players = {"Ai(1)": "Ai(1)", "Ai(2)": "Ai(2)"}
+                local_deck_names = deck_names
+            else:
+                raise LogParseError("Could not find player names")
+        else:
+            deck_names = local_deck_names
         # Mulligan info
         mulligans = {deck_names['Ai(1)']: None, deck_names['Ai(2)']: None}
         for line in game_lines:
@@ -110,14 +116,38 @@ def parse_log_file(filepath: str, processors: List[StatProcessor]) -> List[Dict[
     games = []
     with open(filepath, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    # Split log into games (implement actual splitting logic as needed)
-    # For now, treat the whole file as one game
-    try:
-        for processor in processors:
-            game_stats = processor.process_game(lines)
-            games.append(game_stats)
-    except LogParseError as e:
-        print(f"Malformed game in {filepath}: {e}", file=sys.stderr)
+    # Extract deck names from header (before first Mulligan)
+    deck_names = None
+    header_pat = re.compile(r"Ai\(1\)-(\w+) vs Ai\(2\)-(\w+)")
+    for line in lines:
+        m = header_pat.search(line)
+        if m:
+            deck_names = {"Ai(1)": m.group(1), "Ai(2)": m.group(2)}
+            break
+    # Find all games: each from Mulligan to Game Result (inclusive)
+    i = 0
+    n = len(lines)
+    while i < n:
+        # Find start of next game
+        while i < n and not lines[i].startswith('Mulligan:'):
+            i += 1
+        if i >= n:
+            break
+        start = i
+        # Find end of game (Game Result: ...)
+        while i < n and not lines[i].startswith('Game Result:'):
+            i += 1
+        if i >= n:
+            break
+        end = i
+        game_lines = lines[start:end+1]  # Include Game Result line
+        try:
+            for processor in processors:
+                game_stats = processor.process_game(game_lines, deck_names=deck_names)
+                games.append(game_stats)
+        except LogParseError as e:
+            print(f"Malformed game in {filepath}: {e}", file=sys.stderr)
+        i = end + 1  # Move to next line after this game
     return games
 
 def process_log_directory(log_dir: str, output_path: str = None, processors: List[StatProcessor] = None):
