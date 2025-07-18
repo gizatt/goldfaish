@@ -9,7 +9,7 @@ from tqdm import tqdm
 from goldfaish import FORGE_BIN_PATH, DEFAULT_DECK_DIR
 import traceback
 
-LOG_UPDATE_GRACE_SECONDS = 7  # Wait this long after last log update
+LOG_UPDATE_GRACE_SECONDS = 20  # Wait this long after last log update
 GAME_RESULT_PREFIX = "Game Result: "  # Used to count completed games
 
 

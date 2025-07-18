@@ -87,19 +87,24 @@ class BasicStatsProcessor(StatProcessor):
         # Winner and win turn
         winner = None
         win_turn = None
+        win_matches = []
         for i, line in enumerate(game_lines):
             m = win_pat.match(line)
             if m:
-                winner_full = m.group(1)  # e.g. 'Ai(1)-Goldfish'
-                # Extract just the player (Ai(1) or Ai(2))
-                winner = winner_full.split('-')[0]
-                # Find previous 'Game outcome: Turn X' for win turn
-                for j in range(i-1, -1, -1):
-                    tm = re.match(r"Game outcome: Turn (\d+)", game_lines[j])
-                    if tm:
-                        win_turn = int(tm.group(1))
-                        break
-                break
+                win_matches.append((i, m))
+        if len(win_matches) > 1:
+            raise LogParseError("Multiple winners detected in log (multiple win lines matched)")
+        if win_matches:
+            i, m = win_matches[0]
+            winner_full = m.group(1)  # e.g. 'Ai(1)-Goldfish'
+            # Extract just the player (Ai(1) or Ai(2))
+            winner = winner_full.split('-')[0]
+            # Find previous 'Game outcome: Turn X' for win turn
+            for j in range(i-1, -1, -1):
+                tm = re.match(r"Game outcome: Turn (\d+)", game_lines[j])
+                if tm:
+                    win_turn = int(tm.group(1))
+                    break
         if not winner or not win_turn:
             raise LogParseError("Could not find winner or win turn")
         # Structure output

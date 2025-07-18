@@ -22,7 +22,6 @@ def plot_cumulative_damage(stats, out_dir):
         plt.title(f'Cumulative Damage Taken by Turn ({player})')
         plt.xlabel('Turn')
         plt.ylabel('Cumulative Damage')
-        plt.legend(fontsize='small', ncol=2)
         out_path = os.path.join(out_dir, f'cumulative_damage_{player}.png')
         plt.tight_layout()
         plt.savefig(out_path)
@@ -65,12 +64,20 @@ def plot_win_turn_cdf(stats, out_dir):
         win_turn = game['win_turn']
         win_turns[winner].append(win_turn)
     plt.figure(figsize=(7, 4))
+    percentiles = {}
     for pid in ['Ai(1)', 'Ai(2)']:
         turns = sorted(win_turns[pid])
         if not turns:
             continue
         y = np.arange(1, len(turns)+1) / len(turns)
         plt.step(turns, y, where='post', label=pid)
+        # Compute percentiles
+        percentiles[pid] = {}
+        for p in [10, 25, 50, 75, 90]:
+            if len(turns) > 0:
+                percentiles[pid][p] = int(np.percentile(turns, p, interpolation='nearest'))
+            else:
+                percentiles[pid][p] = None
     plt.title('CDF of Win Turn (by Winner)')
     plt.xlabel('Win Turn')
     plt.ylabel('CDF')
@@ -79,10 +86,16 @@ def plot_win_turn_cdf(stats, out_dir):
     plt.tight_layout()
     plt.savefig(out_path)
     plt.close()
-    return 'win_turn_cdf.png'
+    return 'win_turn_cdf.png', percentiles
 
 
-def write_html(stats, out_dir, plot_files):
+def write_html(stats, out_dir, plot_files, win_turn_percentiles=None):
+    # Compute games won by each player
+    games_won = {'Ai(1)': [], 'Ai(2)': []}
+    for i, game in enumerate(stats):
+        winner = game['winner']
+        if winner in games_won:
+            games_won[winner].append(i+1)  # 1-based game index
     html_path = os.path.join(out_dir, 'stats.html')
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write("""
@@ -125,13 +138,44 @@ def write_html(stats, out_dir, plot_files):
                     </div>
                     <div class="tab-pane fade" id="tab2" role="tabpanel">
                         <img src="{winrate}" alt="Win Rate per Player">
+                        <div class="row mt-4">
+                            <div class="col-md-6">
+                                <h5>Games won by Ai(1):</h5>
+                                <p>{games1}</p>
+                            </div>
+                            <div class="col-md-6">
+                                <h5>Games won by Ai(2):</h5>
+                                <p>{games2}</p>
+                            </div>
+                        </div>
                     </div>
                     <div class="tab-pane fade" id="tab3" role="tabpanel">
                         <img src="{cdf}" alt="CDF of Win Turn">
+        """.format(
+            cumulative_Ai1=plot_files['cumulative_Ai(1)'],
+            cumulative_Ai2=plot_files['cumulative_Ai(2)'],
+            winrate=plot_files['winrate'],
+            cdf=plot_files['cdf'],
+            games1=(', '.join(str(g) for g in games_won['Ai(1)'])) or 'None',
+            games2=(', '.join(str(g) for g in games_won['Ai(2)'])) or 'None',
+        ))
+        # Add percentile summary below the CDF plot
+        if win_turn_percentiles:
+            f.write('<div class="mt-3">')
+            for pid in ['Ai(1)', 'Ai(2)']:
+                if pid in win_turn_percentiles:
+                    f.write(f'<h6>{pid}:</h6><ul>')
+                    for p in [10, 25, 50, 75, 90]:
+                        val = win_turn_percentiles[pid].get(p)
+                        if val is not None:
+                            f.write(f'<li>{p}% of games finish on or before turn {val}</li>')
+                    f.write('</ul>')
+            f.write('</div>')
+        f.write("""
                     </div>
                     <div class="tab-pane fade" id="tab4" role="tabpanel">
                         <ul class="nav nav-tabs" id="logTab" role="tablist">
-        """.format(cumulative_Ai1=plot_files['cumulative_Ai(1)'], cumulative_Ai2=plot_files['cumulative_Ai(2)'], winrate=plot_files['winrate'], cdf=plot_files['cdf']))
+        """)
         for i, game in enumerate(stats):
             f.write(f'''<li class="nav-item" role="presentation">
                 <button class="nav-link{' active' if i==0 else ''}" id="logtab{i}-tab" data-bs-toggle="tab" data-bs-target="#logtab{i}" type="button" role="tab">Game {i+1}</button>
@@ -168,13 +212,14 @@ def main():
         sys.exit(1)
     stats = load_stats(stats_path)
     cumulative_files = plot_cumulative_damage(stats, args.log_dir)
+    cdf_file, win_turn_percentiles = plot_win_turn_cdf(stats, args.log_dir)
     plot_files = {
         'cumulative_Ai(1)': cumulative_files['Ai(1)'],
         'cumulative_Ai(2)': cumulative_files['Ai(2)'],
         'winrate': plot_win_rate(stats, args.log_dir),
-        'cdf': plot_win_turn_cdf(stats, args.log_dir),
+        'cdf': cdf_file,
     }
-    write_html(stats, args.log_dir, plot_files)
+    write_html(stats, args.log_dir, plot_files, win_turn_percentiles=win_turn_percentiles)
 
 
 if __name__ == '__main__':
