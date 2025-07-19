@@ -128,8 +128,10 @@ def main():
     log_dir = os.path.abspath(os.path.join(args.experiment_dir, "logs"))
     os.makedirs(log_dir, exist_ok=True)
     forge_args = [
-        "-d", deck_a, deck_b, "-D", '"' + decks_dir + '/"', "-f", format
+        "-d", deck_a, deck_b, "-D", '"' + decks_dir + '/"', "-f", format,
     ]
+    if "forge_args" in info_dict:
+        forge_args += info_dict["forge_args"]
     if args.forge_args:
         forge_args.append(args.forge_args)
     

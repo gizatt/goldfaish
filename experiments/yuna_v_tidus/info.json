@@ -2,7 +2,6 @@
     "deck_a": "Yuna2.dck",
     "deck_b": "Tidus2.dck",
     "format": "commander",
-    "aiTimeout": 0,
-    "gameTimeout": 600,
-    "useSim": false
+    "forge_args": ["-aiTimeout", "0", "-gameTimeout", "600"],
+    "unused": ["--useSim"]
 }
