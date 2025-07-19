@@ -1,0 +1,7 @@
+{
+    "deck_a": "Yuna.dck",
+    "deck_b": "Goldfish.dck",
+    "format": "commander",
+    "forge_args": ["-aiTimeout", "0", "-gameTimeout", "600"],
+    "unused": ["--useSim"]
+}

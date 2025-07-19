@@ -15,7 +15,7 @@ def parse_card_info(data: str ) -> dict:
     info = data.split("|")
     out = {
         "name": "NONE",
-        "Type": "NONE",
+        "type": "NONE",
         "power": "NONE",
         "toughness": "NONE",
         "manacost": "NONE",
