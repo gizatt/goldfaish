@@ -1,205 +1,181 @@
 import os
+from collections import defaultdict
 import json
 import sys
 import re
 from typing import List, Dict, Any
+import tqdm
+import glob
 
-class LogParseError(Exception):
-    pass
+def parse_card_info(data: str ) -> dict:
+    '''
+        Example: 
+        Diamond Weapon|Set:FIN|Art:1|Type:Legendary Artifact Creature - Elemental|Power:8|Toughness:8|ManaCost:{7}{G}{G}|Tapped|Counters:Indestructible=1,P1P1=1|Attacking
+    '''
+    info = data.split("|")
+    out = {
+        "name": "NONE",
+        "Type": "NONE",
+        "power": "NONE",
+        "toughness": "NONE",
+        "manacost": "NONE",
+        "counters": {}
+    }
 
-class StatProcessor:
-    """
-    Base class for stat processors. Override process_game to extract stats from a parsed game.
-    """
-    def process_game(self, game_lines: List[str], deck_names=None) -> Dict[str, Any]:
-        raise NotImplementedError
-
-class BasicStatsProcessor(StatProcessor):
-    def process_game(self, game_lines: List[str], deck_names=None) -> Dict[str, Any]:
-        # Extract player names
-        header_pat = re.compile(r"Ai\(1\)-(\w+) vs Ai\(2\)-(\w+)")
-        mulligan_pat = re.compile(r"Mulligan: Ai\((\d)\)-(\w+) has (mulliganed down to|kept a hand of) (\d+) cards")
-        turn_pat = re.compile(r"Turn: Turn (\d+) \(Ai\((\d)\)-(\w+)\)")
-        land_play_pat = re.compile(r"Land: Ai\((\d)\)-(\w+) played (.+) \(\d+\)")
-        mana_pat = re.compile(r"Mana: .+\(\d+\) - ")
-        damage_pat = re.compile(r"Damage: .+ deals (\d+) combat damage to Ai\((\d)\)-(\w+)\.")
-        outcome_pat = re.compile(r"Game outcome: (.+)")
-        win_pat = re.compile(r"Game outcome: (Ai\(\d\)-\w+) has won because .+")
-        lose_pat = re.compile(r"Game outcome: (Ai\(\d\)-\w+) has lost because .+")
+    out["name"] = info[0]
+    for subinfo in info[1:]:
+        if ":" not in subinfo:
+            continue
+        try:
+            field_name, field_data = subinfo.split(":")
+        except ValueError:
+            print("Trouble parsing ", subinfo)
+            continue
         
-        # Find player names and deck names
-        players = None
-        local_deck_names = None
-        for line in game_lines:
-            m = header_pat.search(line)
-            if m:
-                players = {"Ai(1)": "Ai(1)", "Ai(2)": "Ai(2)"}
-                local_deck_names = {"Ai(1)": m.group(1), "Ai(2)": m.group(2)}
-                break
-        if not players:
-            # Try to use deck_names passed from file header
-            if deck_names is not None:
-                players = {"Ai(1)": "Ai(1)", "Ai(2)": "Ai(2)"}
-                local_deck_names = deck_names
-            else:
-                raise LogParseError("Could not find player names")
+        match field_name.lower():
+            case "type":
+                out["type"] = field_data
+            case "power":
+                out["power"] = int(field_data)
+            case "toughness":
+                out["toughness"] = int(field_data)
+            case "manacost":
+                out["manacost"] = field_data
+            case "counters":
+                counter_info = {}
+                for counter_data in field_data.split(","):
+                    counter_name, counter_count = counter_data.split("=")
+                    counter_info[counter_name] = int(counter_count)
+            case _:
+                pass
+    return out
+
+def parse_card_list(data: str) -> dict:
+    return [
+        parse_card_info(x) for x in data.split(";")
+    ]
+def parse_game_state(data: str, player_names_in_order: list[str]) -> dict:
+    out = {}
+
+    data_as_dict = {}
+    for row in data.split("\n"):
+        try:
+            field_name, field_data = row.split("=")
+        except ValueError:
+            continue
+        data_as_dict[field_name] = field_data
+    
+    out["turn"] = int(data_as_dict["turn"])
+    player_index = int(data_as_dict["activeplayer"][1]) #p0 or p1 -> 0 or 1
+    assert player_index == 0 or player_index == 1, player_index
+    out["activeplayer"] = player_names_in_order[player_index] 
+    out["activephase"] = data_as_dict["activephase"]
+    
+    for k, player_name in enumerate(player_names_in_order):
+        player_state = {}
+        out[player_name] = player_state
+        basename = f"p{k}"
+        player_state["life"] = data_as_dict[f"{basename}life"]
+        player_state["hand"] = parse_card_list(data_as_dict[f"{basename}hand"])
+        
+        for field_name in ["battlefield", "graveyard"]:
+            combined_name = f"{basename}{field_name}"
+            if combined_name in data_as_dict:
+                player_state[field_name] = parse_card_list(data_as_dict[combined_name])
+
+    return out
+
+def parse_game_log_file(log_file) -> dict:
+    current_event = None
+    current_block = []
+
+    first_line = log_file.readline().strip()
+    assert first_line == "=== Players ===", f"Malformed first line: {first_line}"
+    p1_name = log_file.readline().split(" - ")[0]
+    p2_name = log_file.readline().split(" - ")[0]
+    player_names = [p1_name, p2_name]
+
+    out = {
+        "turns": defaultdict(dict),
+        "players": player_names,
+        "winner": "NONE",
+    }
+
+    import traceback
+    
+    def handle_event_block(event: str, data: str):
+        match event:
+            case "forge.game.event.GameEventTurnPhase":
+                if ("Main phase, precombat phase" in data or "Cleanup step phase" in data) and "Board state" in data:
+                    try:
+                        game_state = parse_game_state(data, player_names_in_order=player_names)
+                        out["turns"][game_state["turn"]][game_state["activephase"]] = game_state
+                    except Exception as e:
+                        print("Error parsing block:")
+                        print(data)
+                        traceback.print_exc()
+            case "forge.game.event.GameEventGameOutcome":
+                assert data[:7] == "result=", f"Malformed result block data {data}"
+                winners = re.findall(r"(.+) has won", data[7:])
+                if len(winners) == 1:
+                    out["winner"] = winners[0]
+                else:
+                    print(f"Warning: Expected exactly one winner, found {len(winners)}: {winners}")
+            case _:
+                pass
+
+    for line in log_file:
+        line = line.rstrip('\n')
+        match = re.match(r"== GameEvent: (.+) ===", line)
+        if match:
+            if current_event:
+                handle_event_block(current_event, "\n".join(current_block))
+            current_event = match.group(1)
+            current_block = []
         else:
-            deck_names = local_deck_names
-        # Mulligan info
-        mulligans = {deck_names['Ai(1)']: None, deck_names['Ai(2)']: None}
-        for line in game_lines:
-            m = mulligan_pat.match(line)
-            if m:
-                pid = f"Ai({m.group(1)})"
-                pname = m.group(2)
-                count = int(m.group(4))
-                mulligans[pname] = count
-                if all(v is not None for v in mulligans.values()):
-                    break
-        # Per-turn stats
-        turns = []
-        current_turn = None
-        for line in game_lines:
-            m = turn_pat.match(line)
-            if m:
-                if current_turn:
-                    turns.append(current_turn)
-                current_turn = {
-                    'turn': int(m.group(1)),
-                    'player': f"Ai({m.group(2)})",  # Use player name, not deck name
-                    'land_plays': [],
-                    'mana_taps': 0,
-                    'damage_taken': {"Ai(1)": 0, "Ai(2)": 0},  # Incremental per turn
-                }
-            elif current_turn:
-                lm = land_play_pat.match(line)
-                if lm and f"Ai({lm.group(1)})" == current_turn['player']:
-                    current_turn['land_plays'].append(lm.group(3))
-                if mana_pat.match(line):
-                    current_turn['mana_taps'] += 1
-                dm = damage_pat.match(line)
-                if dm:
-                    dmg = int(dm.group(1))
-                    pid = f"Ai({dm.group(2)})"
-                    current_turn['damage_taken'][pid] += dmg  # Only this turn's damage
-        if current_turn:
-            turns.append(current_turn)
-        # Winner and win turn
-        winner = None
-        win_turn = None
-        win_matches = []
-        for i, line in enumerate(game_lines):
-            m = win_pat.match(line)
-            if m:
-                win_matches.append((i, m))
-        if len(win_matches) > 1:
-            raise LogParseError("Multiple winners detected in log (multiple win lines matched)")
-        if win_matches:
-            i, m = win_matches[0]
-            winner_full = m.group(1)  # e.g. 'Ai(1)-Goldfish'
-            # Extract just the player (Ai(1) or Ai(2))
-            winner = winner_full.split('-')[0]
-            # Find previous 'Game outcome: Turn X' for win turn
-            for j in range(i-1, -1, -1):
-                tm = re.match(r"Game outcome: Turn (\d+)", game_lines[j])
-                if tm:
-                    win_turn = int(tm.group(1))
-                    break
-        if not winner or not win_turn:
-            raise LogParseError("Could not find winner or win turn")
-        # Structure output
-        return {
-            'players': deck_names,  # Keep deck names for reference
-            'mulligans': mulligans,
-            'winner': winner,  # Now just 'Ai(1)' or 'Ai(2)'
-            'win_turn': win_turn,
-            'turns': turns,
-            'raw_log': ''.join(game_lines),  # Add the raw log as a string
-        }
+            if current_event:
+                current_block.append(line)
+    if current_event:
+        handle_event_block(current_event, "\n".join(current_block))
 
-def parse_log_file(filepath: str, processors: List[StatProcessor]) -> List[Dict[str, Any]]:
-    games = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    # Extract deck names from header (before first Mulligan)
-    deck_names = None
-    header_pat = re.compile(r"Ai\(1\)-(\w+) vs Ai\(2\)-(\w+)")
-    for line in lines:
-        m = header_pat.search(line)
-        if m:
-            deck_names = {"Ai(1)": m.group(1), "Ai(2)": m.group(2)}
-            break
-    # Find all games: each from Mulligan to Game Result (inclusive)
-    i = 0
-    n = len(lines)
-    while i < n:
-        # Find start of next game
-        while i < n and not lines[i].startswith('Mulligan:'):
-            i += 1
-        if i >= n:
-            break
-        start = i
-        # Find end of game (Game Result: ...)
-        while i < n and not lines[i].startswith('Game Result:'):
-            i += 1
-        if i >= n:
-            break
-        end = i
-        game_lines = lines[start:end+1]  # Include Game Result line
-        try:
-            for processor in processors:
-                game_stats = processor.process_game(game_lines, deck_names=deck_names)
-                games.append(game_stats)
-        except LogParseError as e:
-            print(f"Malformed game in {filepath}: {e}", file=sys.stderr)
-        i = end + 1  # Move to next line after this game
-    return games
+    return out
 
-def process_log_directory(log_dir: str, output_path: str = None, processors: List[StatProcessor] = None):
-    import sys
-    if processors is None:
-        processors = [BasicStatsProcessor()]
-    all_stats = []
-    log_files = [fname for fname in os.listdir(log_dir) if fname.endswith('.log')]
-    total = len(log_files)
-    error_count = 0
-    game_count = 0
-    if output_path is None:
-        output_path = os.path.join(log_dir, "stats.json")
-    print(f"Processing {total} log files in '{log_dir}'...")
-    for idx, fname in enumerate(log_files, 1):
-        fpath = os.path.join(log_dir, fname)
-        try:
-            game_stats = parse_log_file(fpath, processors)
-            # Count games and errors
-            if game_stats:
-                all_stats.extend(game_stats)
-                game_count += len(game_stats)
-            else:
-                error_count += 1
-        except Exception as e:
-            print(f"Error processing {fpath}: {e}", file=sys.stderr)
-            error_count += 1
-        # Simple progress bar
-        bar_len = 40
-        filled_len = int(bar_len * idx // total) if total else 0
-        bar = '=' * filled_len + '-' * (bar_len - filled_len)
-        print(f"[{bar}] {idx}/{total} files", end='\r', file=sys.stderr)
-    print(file=sys.stderr)  # Newline after progress bar
-    print(f"Writing stats to {output_path}")
-    print(f"Total games processed: {game_count}")
-    print(f"Total files with errors: {error_count}")
-    with open(output_path, 'w', encoding='utf-8') as out:
-        json.dump(all_stats, out, indent=2)
+
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Process log files into structured stats.")
-    parser.add_argument('log_dir', help="Directory containing .log files")
-    parser.add_argument('--output', help="Output JSON file path (default: stats.json in log_dir)")
+    parser.add_argument(
+        "experiment_dir",
+        help="Experiment directory.")
+    parser.add_argument("--f", help="Overwrite existing data.json", action="store_true")
     args = parser.parse_args()
-    processors = [BasicStatsProcessor()]
-    process_log_directory(args.log_dir, args.output, processors)
+
+    # Open info.json
+    with open(os.path.join(args.experiment_dir, "info.json"), "r") as f:
+        info_dict = json.load(f)
+
+    output_file = os.path.join(args.experiment_dir, "data.json")
+    if os.path.exists(output_file):
+        if args.f:
+            os.remove(output_file)
+        else:
+            raise FileExistsError(output_file)
+    
+    logs_dir = os.path.join(args.experiment_dir, "logs")
+
+    logs_to_read = glob.glob("**/*.log", root_dir=logs_dir)
+    all_data = {}
+    for log_k, log_subpath in enumerate(logs_to_read):
+        log_path = os.path.join(logs_dir, log_subpath)
+        print("Parsing ", log_path)
+        
+        with open(log_path, "r") as f:
+            all_data[f"game_{log_k:03d}"] = parse_game_log_file(f)
+
+    with open(output_file, "w") as f:
+        json.dump(all_data, f, indent=2)
+    print(f"Saved data to {output_file}")
 
 if __name__ == '__main__':
     main()
