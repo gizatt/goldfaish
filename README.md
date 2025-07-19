@@ -22,46 +22,20 @@ This produces a `stats.json` file which contains a structured representation of 
 ```
 {
   winner: player_name
-  turns:
-    - turn_number: 1
-      active_player: X
-      game_state:
-        after_draw: {
-          player_X: {
-            life: 40,
-            hand: [
-              {
-                name: card_name,
-                type: card_type,
-                power: int power if present
-                toughness: int toughness if present
-                counters: "" or counters if present
-                manacost: mana cost,
-              }
-            ]
-            battlefield: [card infos]
-          }
-        }
-        after_end_phase: {
-          player_X: {
-            life: 40,
-            hand: [
-              {
-                name: card_name,
-                type: card_type,
-                power: int power if present
-                toughness: int toughness if present
-                counters: "" or counters if present
-                manacost: mana cost,
-              }
-            ]
-            battlefield: [card infos]
-          }
-        }
+  players: [player_name_1, player_name_2]
+  turns: {
+    "1": {
+      "MAIN1": {
+        game state dict
+      }, 
+      "CLEANUP": {
+        game state dict
+      },
+    }
+  }
 }
 ```
-
-Where a [card info]
+See an existing `data.json` for the exact contents of the game state dict.
 
 ### 4) Do data analysis and plotting. This is fast.
 
