@@ -1,5 +1,6 @@
 import argparse
 import os
+import json
 import uuid
 import subprocess
 import time
@@ -8,120 +9,100 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from goldfaish import FORGE_BIN_DIR, FORGE_CMD
 import traceback
+import datetime
 
-LOG_UPDATE_GRACE_SECONDS = 99999  # Wait this long after last log update before declaring the game timed out.
-GAME_RESULT_PREFIX = "Game Result: "  # Used to count completed games
+TIMEOUT = 600
 
-
-def run_sim(deck1,
-            deck2,
-            out_dir,
+def run_sim(out_dir: str,
             forge_args,
             quiet,
             games,
             pbar=None):
-    # Generate a unique log filename
-    log_id = uuid.uuid4().hex
-    log_path = os.path.join(out_dir, f"match_{log_id}.log")
+    
+    raw_log_path = os.path.join(out_dir, f"raw_log.txt")
 
     # Build the forge command
     cmd = [
-        str(FORGE_CMD), "sim", "-d", deck1, deck2, "-n",
-        str(games), *forge_args
+        str(FORGE_CMD), "sim", "-n",
+        str(games), "-logDir", '"' + out_dir + '"', *forge_args
     ]
     if quiet:
         cmd.append("-q")
 
-    with open(log_path, "w") as logf:
+    with open(raw_log_path, "w") as logf:
         try:
-            print("in director: ", FORGE_BIN_DIR)
             cmd = " ".join(cmd)
-            print("running command: ", cmd)
+            print("Launching job: ", cmd)
             proc = subprocess.Popen(cmd,
                                     stdout=logf,
                                     stderr=subprocess.STDOUT,
                                     cwd=FORGE_BIN_DIR)
-            # Progress tracking
-            last_mtime = os.path.getmtime(log_path)
-            last_update = time.time()
-            while True:
+            start_time = time.time()
+            process_done = False
+            while not process_done:
                 time.sleep(1)
-                # Check if process is done
+
                 proc.poll()
                 process_done = proc.returncode is not None
-                new_mtime = os.path.getmtime(log_path)
-                if new_mtime != last_mtime:
-                    last_mtime = new_mtime
-                    last_update = time.time()
-                # Count completed games
-                try:
-                    with open(log_path, "r", encoding="utf-8",
-                              errors="ignore") as lf:
-                        count = sum(1 for line in lf
-                                    if line.startswith(GAME_RESULT_PREFIX))
-                    if pbar is not None:
-                        pbar.n = count
-                        pbar.refresh()
-                except Exception:
-                    pass
-                # Exit if process is done and log hasn't updated for grace period
-                if process_done or (time.time() - last_update >= LOG_UPDATE_GRACE_SECONDS):
-                    break
+
+                # Count number of files in this directory that end in `.log`.
+                if pbar is not None:
+                    pbar.n = len([f for f in os.listdir(out_dir) if f.endswith('.log')])
+                    pbar.refresh()
+
+                if time.time() - start_time > TIMEOUT:
+                    raise TimeoutError()
+
             if pbar is not None:
                 pbar.n = games
                 pbar.refresh()
                 pbar.close()
             success = proc.returncode == 0
+
             # After simulation, scan log for warnings the user should know about
             warnings = []
             warning_patterns = [re.compile(r"unsupported card", re.IGNORECASE)]
             try:
-                with open(log_path, "r", encoding="utf-8",
+                with open(raw_log_path, "r", encoding="utf-8",
                           errors="ignore") as lf:
                     for line in lf:
                         if any(pat.search(line) for pat in warning_patterns):
                             warnings.append(line.rstrip())
             except Exception:
                 pass
+
             if warnings:
-                print(f"Warnings in {os.path.basename(log_path)}:")
+                print(f"Warnings in {os.path.basename(raw_log_path)}:")
                 for w in warnings:
                     print(w)
                 # Write to log.txt in out_dir
                 log_txt_path = os.path.join(out_dir, "log.txt")
                 with open(log_txt_path, "a", encoding="utf-8") as logf:
                     logf.write(
-                        f"Warnings from {os.path.basename(log_path)}:\n")
+                        f"Warnings from {os.path.basename(raw_log_path)}:\n")
                     for w in warnings:
                         logf.write(w + "\n")
-            return log_path, success
+            return success
         except Exception as e:
             traceback.print_exc()
             if pbar is not None:
                 pbar.close()
-            return log_path, False
+            return  False
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Parallel Forge matchup data collection.")
-    parser.add_argument("--deck1",
-                        required=True,
-                        help="Deck 1 filename (e.g. Goldfish.dck)")
-    parser.add_argument("--deck2",
-                        required=True,
-                        help="Deck 2 filename (e.g. Yuna.dck)")
     parser.add_argument(
-        "--out-dir",
-        default=None,
-        help="Directory to store log files (overrides default sandbox path)")
+        "experiment_dir",
+        help="Experiment directory.")
     parser.add_argument("--games",
                         type=int,
                         default=100,
                         help="Number of games to simulate in each job")
     parser.add_argument("--jobs",
                         type=int,
-                        default=4,
+                        default=3,
                         help="Number of parallel jobs")
     parser.add_argument("--quiet",
                         action="store_true",
@@ -131,17 +112,29 @@ def main():
                         help="Extra args to pass to Forge after decks")
     args = parser.parse_args()
 
-    # Compose default log directory if not provided
-    if args.out_dir is None:
-        deckA = os.path.splitext(os.path.basename(args.deck1))[0]
-        deckB = os.path.splitext(os.path.basename(args.deck2))[0]
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        args.out_dir = os.path.join("sandbox", "logs", f"{deckA}_v_{deckB}",
-                                    timestamp)
-    os.makedirs(args.out_dir, exist_ok=True)
-    forge_args = args.forge_args if args.forge_args else []
-    task = (args.deck1, args.deck2, args.out_dir, forge_args,
-            args.quiet, args.games)
+    # Open info.json
+    with open(os.path.join(args.experiment_dir, "info.json"), "r") as f:
+        info_dict = json.load(f)
+    
+    # Find decks
+    deck_a = info_dict["deck_a"]
+    deck_b = info_dict["deck_b"]
+    format = info_dict["format"]
+    decks_dir = os.path.abspath(os.path.join(args.experiment_dir, "decks"))
+    for deck in deck_a, deck_b:
+        deck_path = os.path.join(decks_dir, deck)
+        assert os.path.exists(deck_path), "No deck found at " + deck_path
+    
+    log_dir = os.path.abspath(os.path.join(args.experiment_dir, "logs"))
+    os.makedirs(log_dir, exist_ok=True)
+    forge_args = [
+        "-d", deck_a, deck_b, "-D", '"' + decks_dir + '/"', "-f", format
+    ]
+    if args.forge_args:
+        forge_args.append(args.forge_args)
+    
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S%f")[:-3]
+    
     results = []
     # Create a progress bar for each job
     pbars = [
@@ -149,21 +142,18 @@ def main():
         for i in range(args.jobs)
     ]
     with ThreadPoolExecutor(max_workers=args.jobs) as executor:
-        futures = [
-            executor.submit(run_sim, *task, pbars[i]) for i in range(args.jobs)
-        ]
+        futures = []
+        for k, pbar in enumerate(pbars):
+            out_dir = os.path.join(log_dir, timestamp + "_job_" + str(k))
+            os.makedirs(out_dir, exist_ok=False)
+            task = (out_dir, forge_args, args.quiet, args.games)
+            futures.append(executor.submit(run_sim, *task, pbar))
         for f in as_completed(futures):
-            log_path, success = f.result()
-            results.append((log_path, success))
+            success = f.result()
+            results.append((success))
     for pbar in pbars:
         pbar.close()
-    failed = [log for log, ok in results if not ok]
-    print(f"\nCompleted {len(results)} simulations. {len(failed)} failed.")
-    if failed:
-        print("Failed log files:")
-        for log in failed:
-            print(log)
-
+    print(f"\nCompleted {len(results)} simulations. {sum(results)} succeeded.")
 
 if __name__ == "__main__":
     main()
