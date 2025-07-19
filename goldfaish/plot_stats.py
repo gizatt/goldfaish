@@ -97,7 +97,7 @@ def plot_win_turn_cdf(stats, out_dir):
         percentiles[pid] = {}
         for p in [10, 25, 50, 75, 90]:
             if len(turns) > 0:
-                percentiles[pid][p] = int(np.percentile(turns, p, method='nearest'))
+                percentiles[pid][p] = np.percentile(turns, p, method='nearest')
             else:
                 percentiles[pid][p] = None
     plt.title('CDF of Win Turn (by Winner)')
