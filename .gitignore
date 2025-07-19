@@ -1,4 +1,5 @@
 sandbox/
+experiments/
 **/logs/
 .venv
 *egg-info

@@ -121,6 +121,13 @@ def parse_game_log_file(log_file) -> dict:
                     out["winner"] = winners[0]
                 else:
                     print(f"Warning: Expected exactly one winner, found {len(winners)}: {winners}")
+                # Figure out loss reason
+                loss_reason = re.findall(r"has lost (.+)", data[7:])
+                if len(loss_reason) == 1:
+                    out["loss_reason"] = loss_reason[0]
+                else:
+                    print(f"Warning: Expected exactly one loss reason, found {loss_reason}")
+
             case _:
                 pass
 
