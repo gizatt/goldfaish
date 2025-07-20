@@ -7,24 +7,35 @@ import abc
 import argparse
 import io
 import base64
+import matplotlib.colors as mcolors
 
 
 def get_players(data: dict):
     return next(iter(data.values()))["players"]
 
 
-def plot_traces_with_errorbars(ax, traces, trace_colors:None|list|str=None):
+def plot_traces_with_errorbars(ax,
+                               traces,
+                               trace_colors: None | list | str = None):
 
     for k, (x, y) in enumerate(traces):
         if isinstance(trace_colors, list):
             color = trace_colors[k]
         else:
             color = trace_colors or "gray"
-        ax.plot(x, y, alpha=0.2, color=color)
+        # Map the color to HSV, and then apply some jitter to the hue.
+        rgb_color = mcolors.to_rgb(color)
+        hsv_color = mcolors.rgb_to_hsv(np.array(rgb_color))
+        hsv_color[0] = (hsv_color[0] + 0.1 *
+                        (float(k) / len(traces)) - 0.05) % 1.0
+        ax.plot(x, y, alpha=0.2, color=mcolors.hsv_to_rgb(hsv_color))
 
     # Stack all data
-    X = np.concatenate([x for x, y in traces])
-    Y = np.concatenate([y for x, y in traces])
+    if len(traces) > 0:
+        X = np.concatenate([x for x, y in traces])
+        Y = np.concatenate([y for x, y in traces])
+    else:
+        return
 
     # Group Y by X
     y_grouped_by_x = defaultdict(list)
@@ -77,36 +88,57 @@ class DataPage:
         ...
 
 
-class HandSizeByTurn(DataPage):
+class FieldSizeByTurn(DataPage):
 
     @staticmethod
     def title():
-        return "Hand Size"
+        return "Hand/Field/GY Size"
 
     def make(data: dict):
         players = get_players(data)
-        plt.figure(dpi=300).set_size_inches(12, 6)
-        for i, player in enumerate(players):
-            ax = plt.subplot(1, len(players), i + 1)
-            all_traces = []
-            trace_colors = []
-            # Collect all traces for this player
-            for game in data.values():
-                if game["winner"] not in players:
-                    continue
-                turns = [] 
-                hand_sizes = []
-                for turn_index, turn in game["turns"].items():
-                    turns.append(float(turn_index) / 2.)
-                    hand_sizes.append(len(turn["MAIN1"][player]["hand"]))
-                if turns:
-                    all_traces.append((np.array(turns), np.array(hand_sizes)))
-                    trace_colors.append("green" if game["winner"] == player else "red")
+        fields = ["hand", "battlefield", "graveyard", "exile", "library"]
+        fig, axes = plt.subplots(
+            nrows=len(fields),
+            ncols=len(players),
+            figsize=(4 * len(players), 3 * len(fields)),
+            dpi=300,
+            sharex='all',
+            sharey='row',
+        )
+        phase = "MAIN1"
 
-            plot_traces_with_errorbars(ax, all_traces, trace_colors)
-            ax.set_title(player)
-            ax.set_xlabel("Turn")
-            ax.set_ylabel("Hand Size")
+        for i, player in enumerate(players):
+            for j, field in enumerate(fields):
+                ax = axes[j, i]
+                all_traces = []
+                trace_colors = []
+                # Collect all traces for this player
+                for game in data.values():
+                    if game["winner"] not in players:
+                        continue
+                    turns = []
+                    field_sizes = []
+                    for turn_index, turn in game["turns"].items():
+                        if turn[phase]["activeplayer"] != player:
+                            continue
+                        turns.append(int(turn_index) // 2)
+                        field_sizes.append(
+                            turn[phase][player]["field_sizes"][field])
+                    if turns:
+                        all_traces.append(
+                            (np.array(turns), np.array(field_sizes)))
+                        trace_colors.append("green" if game["winner"] ==
+                                            player else "red")
+
+                plot_traces_with_errorbars(ax, all_traces, trace_colors)
+                ax.set_title(player)
+                ax.set_xlabel("Turn")
+                ax.set_ylabel(f"Size of {field} at start of {phase}")
+                ax.tick_params(
+                    axis='x',
+                    labelbottom=True)  # Ensure tick labels are visible
+                ax.tick_params(
+                    axis='y', labelleft=True)  # Ensure tick labels are visible
         plt.tight_layout()
 
         buf = io.BytesIO()
@@ -129,6 +161,7 @@ class LandsAndCreaturesOnBoard(DataPage):
         players = get_players(data)
         categories = [
             ("Lands", lambda card: "land" in card["type"].lower()),
+            ("Mana production", lambda card: card["maxmanaproduced"]),
             ("Creatures", lambda card: "creature" in card["type"].lower()),
             ("Nonland Permanents",
              lambda card: "land" not in card["type"].lower()),
@@ -163,17 +196,19 @@ class LandsAndCreaturesOnBoard(DataPage):
                     turns = []
                     counts = []
                     for turn_index, turn in game["turns"].items():
-                        if "battlefield" not in turn["MAIN1"][player]:
-                            continue
-                        battlefield = turn["MAIN1"][player]["battlefield"]
-                        count = sum(
-                            cat_fn(card) for card in battlefield
-                            if card["type"] != "NONE")
+                        if "battlefield" in turn["MAIN1"][player]:
+                            battlefield = turn["MAIN1"][player]["battlefield"]
+                            count = sum(
+                                cat_fn(card) for card in battlefield
+                                if card["type"] != "NONE")
+                        else:
+                            count = 0
                         turns.append(float(turn_index) / 2.)
                         counts.append(count)
                     if turns:
                         traces.append((np.array(turns), np.array(counts)))
-                        trace_colors.append("green" if game["winner"] == player else "red")
+                        trace_colors.append("green" if game["winner"] ==
+                                            player else "red")
                 ax = axes[row, col]
                 plot_traces_with_errorbars(ax, traces, trace_colors)
                 if row == 0:
@@ -181,10 +216,13 @@ class LandsAndCreaturesOnBoard(DataPage):
                 if col == 0:
                     ax.set_ylabel(cat_name)
                 ax.set_xlabel("Turn")
-                ax.tick_params(axis='x', labelbottom=True) # Ensure tick labels are visible
-                ax.tick_params(axis='y', labelleft=True) # Ensure tick labels are visible
+                ax.tick_params(
+                    axis='x',
+                    labelbottom=True)  # Ensure tick labels are visible
+                ax.tick_params(
+                    axis='y', labelleft=True)  # Ensure tick labels are visible
                 ax.legend(fontsize=8, loc="upper left")
-                if cat_name == "Lands":
+                if cat_name in ("Lands", "Mana production"):
                     one_drop_per_turn = np.linspace(0, 100, num=10)
                     xlim = ax.get_xlim()
                     ylim = ax.get_ylim()
@@ -217,11 +255,11 @@ class Life(DataPage):
     def make(data: dict):
         players = get_players(data)
         plt.figure(dpi=300).set_size_inches(12, 6)
-    
+
         fig, axes = plt.subplots(
             nrows=3,
             ncols=len(players),
-            figsize=(6 * len(players), 3*6),
+            figsize=(6 * len(players), 3 * 6),
             dpi=300,
             sharex='all',
             sharey='row',
@@ -256,24 +294,30 @@ class Life(DataPage):
             ax.set_title(player)
             ax.set_xlabel("Turn")
             ax.set_ylabel("Life")
-            ax.tick_params(axis='x', labelbottom=True) # Ensure tick labels are visible
-            ax.tick_params(axis='y', labelleft=True) # Ensure tick labels are visible
+            ax.tick_params(axis='x',
+                           labelbottom=True)  # Ensure tick labels are visible
+            ax.tick_params(axis='y',
+                           labelleft=True)  # Ensure tick labels are visible
 
             ax = axes[1, i]
             plot_traces_with_errorbars(ax, won_traces, "green")
             ax.set_title("Only winning games")
             ax.set_xlabel("Turn")
             ax.set_ylabel("Life")
-            ax.tick_params(axis='x', labelbottom=True) # Ensure tick labels are visible
-            ax.tick_params(axis='y', labelleft=True) # Ensure tick labels are visible
+            ax.tick_params(axis='x',
+                           labelbottom=True)  # Ensure tick labels are visible
+            ax.tick_params(axis='y',
+                           labelleft=True)  # Ensure tick labels are visible
 
             ax = axes[2, i]
             plot_traces_with_errorbars(ax, lost_traces, "red")
             ax.set_title("Only losing games")
             ax.set_xlabel("Turn")
             ax.set_ylabel("Life")
-            ax.tick_params(axis='x', labelbottom=True) # Ensure tick labels are visible
-            ax.tick_params(axis='y', labelleft=True) # Ensure tick labels are visible
+            ax.tick_params(axis='x',
+                           labelbottom=True)  # Ensure tick labels are visible
+            ax.tick_params(axis='y',
+                           labelleft=True)  # Ensure tick labels are visible
 
         plt.tight_layout()
 
@@ -305,7 +349,8 @@ class Winning(DataPage):
             winner = game["winner"]
             if winner not in players:
                 continue
-            loss_reason = game.get("loss_reason", "unknown wincon, reprocess logs")
+            loss_reason = game.get("loss_reason",
+                                   "unknown wincon, reprocess logs")
             all_wincons.add(loss_reason)
             games_won[game["winner"]] += 1
             games_won_by_reason[game["winner"]][loss_reason] += 1
@@ -315,7 +360,9 @@ class Winning(DataPage):
         total_games = sum(list(games_won.values()))
         bottom = np.zeros(len(players))
         for wincon in all_wincons:
-            heights = np.array([games_won_by_reason[player][wincon] for player in players])# / total_games
+            heights = np.array([
+                games_won_by_reason[player][wincon] for player in players
+            ])  # / total_games
             ax.bar(players, heights, bottom=bottom, label=wincon)
             bottom += heights
         plt.legend()
@@ -343,7 +390,7 @@ class Winning(DataPage):
         return img_html
 
 
-def make_html(data: dict):
+def make_html(data: dict, title):
     # Generate HTML tabs for each DataPage subclass
     subclasses = DataPage.get_subclasses()
     tab_headers = []
@@ -367,6 +414,7 @@ def make_html(data: dict):
     <!DOCTYPE html>
     <html>
     <head>
+    <title>{title}</title>
     <style>
     .tab {{
       overflow: hidden;
@@ -436,12 +484,9 @@ def main():
     with open(data_json, "r") as f:
         data = json.load(f)
 
-    # Save out the plots and HTML to a `plots` subdirectory.
-    plots_dir = os.path.join(args.experiment_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
-
-    html = make_html(data)
-    with open(os.path.join(plots_dir, "index.html"), "w",
+    html = make_html(data, args.experiment_dir)
+    with open(os.path.join(args.experiment_dir, "index.html"),
+              "w",
               encoding="utf-8") as f:
         f.write(html)
 

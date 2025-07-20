@@ -11,7 +11,7 @@ from goldfaish import FORGE_BIN_DIR, FORGE_CMD
 import traceback
 import datetime
 
-TIMEOUT = 2400
+TIMEOUT = 100000 # Just over a day...
 
 def run_sim(out_dir: str,
             forge_args,
