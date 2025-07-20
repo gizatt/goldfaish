@@ -8,11 +8,21 @@ import argparse
 import io
 import base64
 import matplotlib.colors as mcolors
+import numpy as np
+import scipy.stats
+import dataclasses
+from statistics import NormalDist
 
 
 def get_players(data: dict):
     return next(iter(data.values()))["players"]
 
+def mean_confidence_interval(data, confidence=0.95):
+    a = 1.0 * np.array(data)
+    n = len(a)
+    m, se = np.mean(a), scipy.stats.sem(a)
+    h = se * scipy.stats.t.ppf((1 + confidence) / 2., n-1)
+    return m, h
 
 def plot_traces_with_errorbars(ax,
                                traces,
@@ -354,9 +364,9 @@ class Winning(DataPage):
             all_wincons.add(loss_reason)
             games_won[game["winner"]] += 1
             games_won_by_reason[game["winner"]][loss_reason] += 1
-            won_durations[game["winner"]].append(len(game["turns"]) / 2.)
+            won_durations[game["winner"]].append(len(game["turns"]) // 2)
 
-        ax = plt.subplot(2, 1, 1)
+        ax = plt.subplot(3, 1, 1)
         total_games = sum(list(games_won.values()))
         bottom = np.zeros(len(players))
         for wincon in all_wincons:
@@ -368,18 +378,57 @@ class Winning(DataPage):
         plt.legend()
         plt.title("Games Won (N=%d)" % total_games)
 
-        plt.subplot(2, 1, 2)
+        # Assume win turn is normally distributed. Estimate the distrubtion.
+        # TODO(gizatt) Poisson is probably a better choice
+        player_colors = ["blue", "orange"]
         for k, player in enumerate(players):
-            turns = sorted(won_durations[player])
-            if not turns:
+            color = player_colors[k]
+            won_turns = sorted(won_durations[player])
+            if len(won_turns) < 2:
                 continue
-            y = np.arange(1, len(turns) + 1) / len(turns)
-            plt.step(turns, y, where='post', label=player)
-        plt.title('CDF of Win Turn')
-        plt.xlabel('Win Turn')
-        plt.ylabel('CDF')
-        plt.legend()
-        plt.tight_layout()
+            confidence = 0.95
+            mean, h = mean_confidence_interval(won_turns, confidence=confidence)
+            sigma = np.std(won_turns)
+            estimated_dist = NormalDist(mu=mean, sigma=sigma)
+
+            ax = plt.subplot(3, 1, 2)
+            total_games = len(won_turns)
+
+            y = np.arange(1, len(won_turns) + 1) / len(won_turns)
+            # Draw the empirical CDF
+            label=f"{player}: mean {mean:0.02f} +/- {h:0.02f}, std {sigma:0.02f}"
+            ax.step(won_turns, y, where='post', label=label, color=color, alpha=0.8)
+            # And draw the estimated CDF and error bars on it
+            xs = np.arange(min(won_turns), max(won_turns), step=0.1)
+            est_cdf = np.array([estimated_dist.cdf(x) for x in xs])
+            ax.plot(xs, est_cdf, linestyle="--", color=color, alpha=0.8)
+            ax.fill_betweenx(est_cdf, xs-h, xs+h,
+                        alpha=0.2,
+                        color=color,)
+            plt.title('CDF of Win Turn')
+            plt.xlabel('Win Turn')
+            plt.ylabel('CDF')
+
+            plt.legend()
+            plt.tight_layout()
+
+
+            plt.subplot(3, 1, 3)
+            num_wins_on_turn = defaultdict(int)
+            for won_duration in won_durations[player]:
+                num_wins_on_turn[won_duration] += 1
+            if len(num_wins_on_turn) == 0:
+                continue
+            total_wins = sum(list(num_wins_on_turn.values()))
+            plt.bar(num_wins_on_turn.keys(), np.array(list(num_wins_on_turn.values())) / total_wins, label=player, alpha=0.5)
+            plt.plot(xs, np.array([estimated_dist.pdf(x) for x in xs]), color=color, alpha=0.8)
+
+            plt.title('Probability of Win on Turn N')
+            plt.xlabel('Turn')
+            plt.ylabel('Probability')
+
+            plt.legend()
+            plt.tight_layout()
 
         buf = io.BytesIO()
         plt.savefig(buf, format="png", bbox_inches="tight")
